@@ -12,6 +12,7 @@ test('desktop: title, rendered world, movement, feeding, scoring, pause and rest
   const errors:string[]=[];page.on('pageerror',e=>errors.push(e.message));
   await page.goto('/');await expect(page.getByRole('button',{name:'FEIERABEND RETTEN'})).toBeVisible();
   await expect(page.locator('.cover-art')).toHaveJSProperty('complete',true);await page.screenshot({path:'qa/desktop-title.png',animations:'disabled'});
+  await page.getByRole('button',{name:'Klassischer Haushalt',exact:true}).click();
   await page.getByRole('button',{name:'FEIERABEND RETTEN'}).click();await expect(page.locator('canvas')).toBeVisible();
   await expect.poll(()=>page.evaluate(()=>(window as any).__HAMID_DEV__.frames())).toBeGreaterThan(8);
   await page.screenshot({path:'qa/desktop-world.png'});await walkTo(page,3.3,-3.6);await page.keyboard.press('e');

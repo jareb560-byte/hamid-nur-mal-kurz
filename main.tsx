@@ -3,6 +3,7 @@ import {createRoot} from 'react-dom/client';
 import Game from './src/Game';
 import './app/globals.css';
 import './src/style.css';
+import './src/rush.css';
 
 class ErrorBoundary extends React.Component<{children:React.ReactNode},{failed:boolean}>{
   state={failed:false};

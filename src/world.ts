@@ -13,6 +13,7 @@ export class Apartment {
   width=1;height=1; resizeObserver:ResizeObserver|null=null; low=false; disposed=false;
   mats=new Map<string,THREE.MeshStandardMaterial|THREE.MeshLambertMaterial>(); clock=0; reduced=false;
   profile:GraphicsProfile;
+  bonusMeshes:THREE.Group[]=[];routeLine!:THREE.Line;
   constructor(public canvas:HTMLCanvasElement,safe=false){
     this.profile=graphicsProfile(window.matchMedia('(pointer: coarse)').matches,safe);
     this.low=this.profile.lightweight;
@@ -30,6 +31,7 @@ export class Apartment {
     sun.shadow.mapSize.set(1024,1024);Object.assign(sun.shadow.camera,{left:-16,right:16,top:14,bottom:-14,near:0.1,far:50});sun.shadow.bias=-0.0004;sun.shadow.normalBias=0.045;this.scene.add(sun);
     const fill=new THREE.DirectionalLight('#9bdeeb',1);fill.position.set(-10,5,10);this.scene.add(fill);
     this.buildApartment();this.batchStaticGeometry();this.buildHamid();this.buildCat('#db8a3f',0);this.buildCat('#e9d7bb',1);this.buildCat('#343c41',2);
+    this.buildRushObjects();
     const dustPositions=new Float32Array(80*3);for(let i=0;i<80;i++){dustPositions[i*3]=Math.sin(i*7.1)*10;dustPositions[i*3+1]=0.7+(i%17)/4;dustPositions[i*3+2]=Math.cos(i*5.7)*7;}
     const dg=new THREE.BufferGeometry();dg.setAttribute('position',new THREE.BufferAttribute(dustPositions,3));
     this.dust=new THREE.Points(dg,new THREE.PointsMaterial({color:'#ffe1ae',size:0.035,transparent:true,opacity:.45,depthWrite:false}));this.scene.add(this.dust);
@@ -179,6 +181,16 @@ export class Apartment {
     const viewWidth=aspect<.8?25.5:aspect<1.2?27:32.5;const viewHeight=Math.max(18.2,viewWidth/aspect);
     this.camera.left=-viewHeight*aspect/2;this.camera.right=viewHeight*aspect/2;this.camera.top=viewHeight/2;this.camera.bottom=-viewHeight/2;this.camera.updateProjectionMatrix();
   }
+  buildRushObjects(){
+    for(let i=0;i<3;i++){
+      const g=new THREE.Group();const material=new THREE.MeshBasicMaterial({color:'#ffce72'});
+      const coin=new THREE.Mesh(new THREE.OctahedronGeometry(.21),material);g.add(coin);
+      const ring=new THREE.Mesh(new THREE.TorusGeometry(.3,.018,4,20),material);ring.rotation.x=Math.PI/2;ring.position.y=-.27;g.add(ring);
+      this.root.add(g);this.bonusMeshes.push(g);
+    }
+    const geometry=new THREE.BufferGeometry();geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(250*3),3));geometry.setDrawRange(0,0);
+    this.routeLine=new THREE.Line(geometry,new THREE.LineBasicMaterial({color:'#9cfce1',transparent:true,opacity:.7,depthTest:false}));this.routeLine.frustumCulled=false;this.root.add(this.routeLine);
+  }
   update(s:GameState,dt:number,animate=true):Marker[]{
     if(this.disposed||this.renderer.getContext().isContextLost())return [];if(animate)this.clock+=dt;
     const t=this.clock,p=s.player;this.hamid.position.set(p.x,.08+(p.moving&&animate?Math.abs(Math.sin(t*12))*.055:0),p.z);
@@ -187,15 +199,18 @@ export class Apartment {
     this.cats.forEach(({root,tail,seed})=>{const a=t*.15+seed*2.1;const x=1.5+Math.sin(a)*2.2,z=-.15+Math.cos(a*.87)*1.6;root.position.set(x,.06,z);root.rotation.y=Math.atan2(Math.cos(a),-Math.sin(a*.87));tail.rotation.z=Math.sin(t*2.5+seed)*.22;});
     this.lamps.forEach((l,i)=>{(l.material as THREE.MeshStandardMaterial).emissive.set(i%3===Math.floor(t*2)%3?'#53e897':'#163a27');});
     this.dust.visible=!this.reduced&&!this.low;this.dust.rotation.y=t*.013;
+    this.bonusMeshes.forEach((g,i)=>{const pickup=s.rush.pickups[i];g.visible=s.mode==='rush'&&!!pickup;if(!pickup)return;g.position.set(pickup.x,.6+(!this.reduced?Math.sin(t*3+i)*.09:0),pickup.z);g.rotation.y=this.reduced?0:t*1.4;});
+    const route=s.route.slice(0,248),positions=this.routeLine.geometry.getAttribute('position');positions.setXYZ(0,p.x,.19,p.z);route.forEach((pt,i)=>positions.setXYZ(i+1,pt.x,.19,pt.z));positions.needsUpdate=true;this.routeLine.geometry.setDrawRange(0,route.length?route.length+1:0);
     for(const st of STATIONS){const task=s.tasks.find(v=>v.station===st.id),ring=this.rings.get(st.id)!;ring.visible=!!task;ring.scale.setScalar(1+(!this.reduced&&task?.urgent?Math.sin(t*6)*.07:0));}
     this.renderer.render(this.scene,this.camera);
-    return STATIONS.map(st=>{const v=new THREE.Vector3(st.x,2.75,st.z).project(this.camera);return{id:st.id,x:(v.x*.5+.5)*this.width,y:(-v.y*.5+.5)*this.height,visible:!!s.tasks.find(t=>t.station===st.id)};});
+    const markers:Marker[]=STATIONS.map(st=>{const v=new THREE.Vector3(st.x,2.75,st.z).project(this.camera);return{id:st.id,x:(v.x*.5+.5)*this.width,y:(-v.y*.5+.5)*this.height,visible:!!s.tasks.find(t=>t.station===st.id)};});
+    for(const p of s.rush.pickups){const v=new THREE.Vector3(p.x,.75,p.z).project(this.camera);markers.push({id:`pickup-${p.id}`,x:(v.x*.5+.5)*this.width,y:(-v.y*.5+.5)*this.height,visible:true});}return markers;
   }
   dispose(){
     if(this.disposed)return;this.disposed=true;this.resizeObserver?.disconnect();
     const geometries=new Set<THREE.BufferGeometry>(),materials=new Set<THREE.Material>(this.mats.values());
     this.scene.traverse(obj=>{
-      if(obj instanceof THREE.Mesh||obj instanceof THREE.Points){geometries.add(obj.geometry);(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(m=>materials.add(m));}
+      if(obj instanceof THREE.Mesh||obj instanceof THREE.Points||obj instanceof THREE.Line){geometries.add(obj.geometry);(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(m=>materials.add(m));}
       if(obj instanceof THREE.InstancedMesh)obj.dispose();
       if(obj instanceof THREE.DirectionalLight||obj instanceof THREE.PointLight||obj instanceof THREE.SpotLight)obj.shadow.dispose();
     });

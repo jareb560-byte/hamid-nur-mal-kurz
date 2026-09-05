@@ -1,7 +1,7 @@
 // An original, quiet pizzicato soundtrack and tiny arcade sounds. No audio files.
 export class GameAudio {
   context:AudioContext|null=null; master:GainNode|null=null; timer:ReturnType<typeof setInterval>|null=null;
-  enabled=true;step=0;playing=false;
+  enabled=true;step=0;playing=false;intensity=0;
   init(){if(!this.context){this.context=new AudioContext();this.master=this.context.createGain();this.master.gain.value=.24;this.master.connect(this.context.destination);}void this.context.resume();}
   tone(frequency:number,duration:number,type:OscillatorType='sine',volume=.2,delay=0){
     if(!this.enabled||!this.context||!this.master)return;
@@ -18,7 +18,7 @@ export class GameAudio {
   music(playing:boolean){
     this.playing=playing;if(this.timer){clearInterval(this.timer);this.timer=null;}if(!playing)return;
     const melody=[0,7,12,9,7,4,2,7,0,4,9,12,11,7,4,2];const bass=[130.81,110,146.83,98];
-    this.timer=setInterval(()=>{if(!this.enabled)return;const i=this.step++;const root=bass[Math.floor(i/8)%4];if(i%2===0)this.tone(root,.45,'triangle',.13);if(i%2===1||i%8===0)this.tone(261.63*Math.pow(2,melody[i%melody.length]/12),.24,'sine',.11);if(i%4===2)this.tone(1800,.025,'triangle',.025);},260);
+    this.timer=setInterval(()=>{if(!this.enabled)return;const i=this.step++;const root=bass[Math.floor(i/8)%4];if(i%2===0)this.tone(root,.45,'triangle',.13);if(i%2===1||i%8===0)this.tone(261.63*Math.pow(2,melody[i%melody.length]/12),.24,'sine',.11);if(i%4===2)this.tone(1800,.025,'triangle',.025);if(this.intensity>0&&i%2===0)this.tone(74,.12,'sine',.1);if(this.intensity>1)this.tone(2200,.035,'triangle',.035,.13);if(this.intensity>2&&i%4===0)this.tone(root*4,.19,'triangle',.08,.13);},260);
   }
   dispose(){if(this.timer)clearInterval(this.timer);void this.context?.close();}
 }
