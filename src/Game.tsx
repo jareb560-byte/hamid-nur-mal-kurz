@@ -18,6 +18,8 @@ export default function Game(){
   const game=useRef<GameState>({...createGame(),phase:'menu'});const [revision,redraw]=useState(0);const s=game.current;
   const [difficulty,setDifficulty]=useState<Difficulty>('normal');const [sound,setSound]=useState(()=>readStorage('hamid-sound','on')==='on');
   const [help,setHelp]=useState(false),[best,setBest]=useState(()=>Number(readStorage('hamid-best','0'))||0),[worldError,setWorldError]=useState('');
+  const [rendererEpoch,setRendererEpoch]=useState(0);
+  const graphicsStatus=useRef<'ready'|'recovering'|'failed'>('ready'),autoRebuilds=useRef(1);
   const canvas=useRef<HTMLCanvasElement>(null),world=useRef<Apartment|null>(null),audio=useRef<GameAudio|null>(null);
   const keys=useRef(new Set<string>()),joystick=useRef({x:0,y:0,id:-1}),miniReady=useRef(false),markerRefs=useRef(new Map<string,HTMLButtonElement>());
   const [joystickKnob,setJoystickKnob]=useState({x:0,y:0}),[selected,setSelected]=useState<StationId|null>(null);
@@ -28,12 +30,51 @@ export default function Game(){
   useEffect(()=>{audio.current?.music(s.phase==='playing'||s.phase==='minigame');},[s.phase]);
   const clearControls=()=>{keys.current.clear();joystick.current={x:0,y:0,id:-1};setJoystickKnob({x:0,y:0});pendingDash.current=false;game.current.player.moving=false;};
   const pause=()=>{pauseGame(game.current);clearControls();refresh();};
-  const interact=()=>{if(startTask(game.current)){miniReady.current=false;clearControls();audio.current?.effect('click');refresh();}};
+  const interact=()=>{if(graphicsStatus.current!=='ready')return;if(startTask(game.current)){miniReady.current=false;clearControls();audio.current?.effect('click');refresh();}};
+  const rebuildGraphics=()=>{
+    if(game.current.phase==='menu')return;
+    pauseGame(game.current);clearControls();setHelp(false);writeStorage('hamid-graphics-safe','on');
+    graphicsStatus.current='recovering';setWorldError('Dein Spiel bleibt pausiert. Wir bauen die Wohnung mit leichteren Grafikeffekten neu auf.');
+    setRendererEpoch(v=>v+1);
+  };
   useEffect(()=>{
     if(inMenu||!canvas.current)return;
-    let apartment:Apartment;try{apartment=new Apartment(canvas.current);world.current=apartment;}catch(error){setWorldError('Die 3D-Ansicht konnte nicht starten. Aktiviere die Hardwarebeschleunigung deines Browsers oder öffne das Spiel in einem aktuellen Browser.');return;}
-    let raf=0,last=performance.now(),accumulator=0,uiAccumulator=0,lastRender=0;
+    const c=canvas.current;let apartment:Apartment|undefined,disposed=false,lost=false;
+    let raf=0,last=performance.now(),accumulator=0,uiAccumulator=0,lastRender=0,lastPhase='',lastSize='';
+    let recoveryTimer:ReturnType<typeof setTimeout>|undefined;
+    let restoreTimer:ReturnType<typeof setTimeout>|undefined;
+    const clearRecoveryTimer=()=>{if(recoveryTimer!==undefined){clearTimeout(recoveryTimer);recoveryTimer=undefined;}};
+    const stopLoop=()=>{cancelAnimationFrame(raf);raf=0;accumulator=0;};
+    const failGraphics=()=>{
+      stopLoop();pauseGame(game.current);clearControls();writeStorage('hamid-graphics-safe','on');
+      graphicsStatus.current='failed';setWorldError('Dein Spielstand ist noch da. Versuche, nur die Grafik neu aufzubauen. Falls das nicht klappt, öffne den Spiellink über das Browsermenü im normalen Browser.');refresh();
+    };
+    const scheduleRecovery=()=>{
+      clearRecoveryTimer();if(document.hidden)return;
+      recoveryTimer=setTimeout(()=>{
+        if(disposed||!lost||document.hidden)return;
+        if(autoRebuilds.current>0){autoRebuilds.current--;rebuildGraphics();}else failGraphics();
+      },4000);
+    };
+    const contextLost=(e?:Event)=>{
+      e?.preventDefault();if(disposed||lost)return;
+      lost=true;stopLoop();pauseGame(game.current);clearControls();setHelp(false);writeStorage('hamid-graphics-safe','on');
+      graphicsStatus.current='recovering';setWorldError('Dein Spiel ist pausiert. Wir stellen die Grafikverbindung wieder her. Dein Fortschritt bleibt erhalten.');refresh();scheduleRecovery();
+    };
+    const draw=(dt:number)=>{
+      if(!apartment||lost||disposed||document.hidden)return false;
+      if(apartment.renderer.getContext().isContextLost()){contextLost();return false;}
+      const markers=apartment.update(game.current,dt,game.current.phase==='playing');
+      markers.forEach(m=>{const el=markerRefs.current.get(m.id);if(el){el.style.left=`${m.x}px`;el.style.top=`${m.y}px`;}});
+      if(apartment.renderer.getContext().isContextLost()){contextLost();return false;}
+      lastPhase=game.current.phase;lastSize=`${apartment.width}:${apartment.height}`;return true;
+    };
+    const finishRecovery=()=>{
+      if(graphicsStatus.current!=='ready')notice(game.current,'Grafik wieder da. Dein Spielstand ist erhalten.');
+      graphicsStatus.current='ready';setWorldError('');refresh();
+    };
     const loop=(now:number)=>{
+      raf=0;if(disposed||lost||document.hidden||!apartment||graphicsStatus.current!=='ready')return;
       const dt=Math.min(.25,(now-last)/1000);last=now;accumulator+=dt;uiAccumulator+=dt;const state=game.current;
       const running=state.phase==='playing'||state.phase==='minigame'&&miniReady.current;
       if(running){while(accumulator>=1/60){
@@ -41,18 +82,37 @@ export default function Game(){
         const y=(keys.current.has('KeyS')||keys.current.has('ArrowDown')?1:0)-(keys.current.has('KeyW')||keys.current.has('ArrowUp')?1:0)+joystick.current.y;
         const dash=pendingDash.current;pendingDash.current=false;movePlayer(state,x*.8+y*.6,-x*.6+y*.8,1/60,dash);tick(state,1/60);accumulator-=1/60;
       }}else accumulator=0;
-      if(state.phase==='playing'||now-lastRender>500){
-        const markers=apartment.update(state,dt,state.phase==='playing');lastRender=now;
-        markers.forEach(m=>{const el=markerRefs.current.get(m.id);if(el){el.style.left=`${m.x}px`;el.style.top=`${m.y}px`;}});
+      if((state.phase==='playing'&&now-lastRender>=apartment.profile.frameInterval-.5)||lastPhase!==state.phase||lastSize!==`${apartment.width}:${apartment.height}`){
+        try {if(!draw(Math.min(.25,(now-lastRender)/1000)))return;lastRender=now;}catch{failGraphics();return;}
       }
       if(uiAccumulator>.08){refresh();uiAccumulator=0;}frameCount.current++;raf=requestAnimationFrame(loop);
-    };raf=requestAnimationFrame(loop);
-    const contextLost=(e:Event)=>{e.preventDefault();pauseGame(game.current);setWorldError('Die Grafikverbindung wurde unterbrochen. Lade das Spiel neu, um weiterzuspielen.');refresh();};canvas.current.addEventListener('webglcontextlost',contextLost);
-    const c=canvas.current;return()=>{cancelAnimationFrame(raf);c.removeEventListener('webglcontextlost',contextLost);apartment.dispose();world.current=null;};
-  },[inMenu]);
+    };
+    const startLoop=()=>{if(!raf&&!disposed&&!lost&&!document.hidden&&graphicsStatus.current==='ready'){last=performance.now();accumulator=0;raf=requestAnimationFrame(loop);}};
+    const contextRestored=()=>{
+      // Use a new task (not a microtask) so every native listener, including Three, has finished.
+      if(restoreTimer!==undefined)clearTimeout(restoreTimer);
+      restoreTimer=setTimeout(()=>{
+        if(disposed||!apartment||apartment.renderer.getContext().isContextLost())return;
+        lost=false;clearRecoveryTimer();
+        try{apartment.useSafeGraphics();if(!document.hidden&&!draw(0))return;finishRecovery();startLoop();}catch{failGraphics();}
+      },0);
+    };
+    const visibility=()=>{if(document.hidden){stopLoop();clearRecoveryTimer();}else if(lost)scheduleRecovery();else startLoop();};
+    const cleanup=()=>{
+      disposed=true;stopLoop();clearRecoveryTimer();if(restoreTimer!==undefined)clearTimeout(restoreTimer);c.removeEventListener('webglcontextlost',contextLost);c.removeEventListener('webglcontextrestored',contextRestored);document.removeEventListener('visibilitychange',visibility);
+      apartment?.dispose();if(world.current===apartment)world.current=null;
+    };
+    // Listen before construction: a mobile GPU can fail while the first buffers are allocated.
+    c.addEventListener('webglcontextlost',contextLost);c.addEventListener('webglcontextrestored',contextRestored);document.addEventListener('visibilitychange',visibility);
+    try{
+      apartment=new Apartment(c,readStorage('hamid-graphics-safe','off')==='on');world.current=apartment;
+      if(apartment.renderer.getContext().isContextLost()){contextLost();}else if(!document.hidden&&draw(0)){finishRecovery();startLoop();}else if(document.hidden){finishRecovery();}
+    }catch{failGraphics();}
+    return cleanup;
+  },[inMenu,rendererEpoch]);
   useEffect(()=>{
     const down=(e:KeyboardEvent)=>{
-      if(game.current.phase==='menu'||(e.target as HTMLElement)?.tagName==='INPUT')return;
+      if(game.current.phase==='menu'||graphicsStatus.current!=='ready'||(e.target as HTMLElement)?.tagName==='INPUT')return;
       if(['ArrowUp','ArrowDown','ArrowLeft','ArrowRight','Space','Tab'].includes(e.code)&&e.code!=='Tab')e.preventDefault();
       if(e.repeat)return;
       if(e.code==='KeyP'||e.code==='Escape'){
@@ -68,9 +128,9 @@ export default function Game(){
     return()=>{window.removeEventListener('keydown',down);window.removeEventListener('keyup',up);document.removeEventListener('visibilitychange',visibility);window.removeEventListener('blur',blur);};
   },[]);
   useEffect(()=>{if((s.phase==='won'||s.phase==='lost')&&!finishSaved.current){finishSaved.current=true;if(s.score>best){setBest(s.score);writeStorage('hamid-best',String(s.score));}audio.current?.effect(s.phase==='won'?'win':'bad');}},[s.phase]);
-  useEffect(()=>{if(import.meta.env.DEV){(window as unknown as {__HAMID_DEV__:unknown}).__HAMID_DEV__={getState:()=>JSON.parse(JSON.stringify(game.current)),frames:()=>frameCount.current,station:(id:StationId,final=false)=>{const st=STATIONS.find(v=>v.id===id);if(!st)return;game.current=createGame('normal',7);const g=game.current;g.tasks=[{id:4,station:id,remaining:60,total:60,urgent:false}];g.player.x=st.x;g.player.z=st.z;g.finalJob=final;startTask(g);miniReady.current=false;refresh();}};}},[]);
-  const start=()=>{audio.current?.init();game.current=createGame(difficulty);miniReady.current=false;finishSaved.current=false;setSelected(null);setWorldError('');clearControls();refresh();};
-  const mainMenu=()=>{game.current.phase='menu';game.current.activeTask=null;setHelp(false);clearControls();refresh();};
+  useEffect(()=>{if(import.meta.env.DEV){(window as unknown as {__HAMID_DEV__:unknown}).__HAMID_DEV__={getState:()=>JSON.parse(JSON.stringify(game.current)),frames:()=>frameCount.current,graphics:()=>world.current?{profile:world.current.profile,draws:world.current.renderer.info.render.frame,pixelRatio:world.current.renderer.getPixelRatio(),shadows:world.current.renderer.shadowMap.enabled,status:graphicsStatus.current}:null,station:(id:StationId,final=false)=>{const st=STATIONS.find(v=>v.id===id);if(!st)return;game.current=createGame('normal',7);const g=game.current;g.tasks=[{id:4,station:id,remaining:60,total:60,urgent:false}];g.player.x=st.x;g.player.z=st.z;g.finalJob=final;startTask(g);miniReady.current=false;refresh();}};}},[]);
+  const start=()=>{audio.current?.init();game.current=createGame(difficulty);miniReady.current=false;finishSaved.current=false;autoRebuilds.current=1;graphicsStatus.current='ready';setSelected(null);setWorldError('');clearControls();refresh();};
+  const mainMenu=()=>{game.current.phase='menu';game.current.activeTask=null;graphicsStatus.current='ready';setWorldError('');setHelp(false);clearControls();refresh();};
   const completeMini=(quality:number)=>{finishTask(game.current,quality);miniReady.current=false;refresh();};
   const markStation=(id:StationId)=>{setSelected(id);const st=STATIONS.find(v=>v.id===id)!;if(Math.hypot(s.player.x-st.x,s.player.z-st.z)<=1.65){interact();}else{notice(s,`Zu „${st.name}“ gehen. Dann E oder ANPACKEN.`);refresh();}};
   const toggleSound=()=>{audio.current?.init();setSound(v=>!v);};
@@ -91,7 +151,7 @@ export default function Game(){
       <aside className="cover-quote"><span>HAMID, KURZ VOR DEM CHAOS</span><p>„Ich bin doch<br/>vom Fach.“</p></aside>
       <footer className="title-footer"><span>EIN LIEBEVOLLER FAMILIEN-ROAST <Heart size={12}/></span><span>{best>0?`DEIN REKORD ${best.toLocaleString('de-DE')}`:'6 AUFGABEN · 3 SCHWIERIGKEITEN · 1 LEGENDE'}</span></footer>
     </section>:<>
-      <div className="world-wrap"><canvas ref={canvas} className="world-canvas" aria-label="Begehbare 3D-Wohnung. Steuere Hamid mit WASD oder den Pfeiltasten."/>
+      <div className="world-wrap"><canvas key={rendererEpoch} ref={canvas} className="world-canvas" aria-label="Begehbare 3D-Wohnung. Steuere Hamid mit WASD oder den Pfeiltasten."/>
         <div className="station-markers">{STATIONS.map(st=>{const task=s.tasks.find(t=>t.station===st.id);return <button key={st.id} ref={el=>{if(el)markerRefs.current.set(st.id,el);else markerRefs.current.delete(st.id);}} className={`station-marker ${task?'active':''} ${task?.urgent?'urgent':''} ${selected===st.id?'selected':''}`} style={{'--station-color':st.color} as React.CSSProperties} onClick={()=>markStation(st.id)} aria-label={`${st.name}${task?`, ${Math.ceil(task.remaining)} Sekunden`:''}`} disabled={!task} tabIndex={task?0:-1}><span><Icon id={st.id} size={20}/></span>{task&&<small>{Math.ceil(task.remaining)}</small>}</button>;})}</div>
       </div>
       <header className="hud-top"><div className="mini-logo">HAMID<span>NUR MAL KURZ.</span></div><div className="chapter"><span>{phaseLabel}</span><div className="chapter-dots">{Array.from({length:s.target},(_,i)=><i key={i} className={i<s.completed?'filled':''}/>)}</div></div><div className={`timer ${s.time<40?'low':''}`}><Clock size={17}/><strong>{time(s.time)}</strong></div><button className="icon-button" onClick={toggleSound} aria-label={sound?'Ton ausschalten':'Ton einschalten'}>{sound?<Volume2 size={19}/>:<VolumeX size={19}/>}</button><button className="icon-button" onClick={pause} aria-label="Spiel pausieren"><Pause size={20}/></button></header>
@@ -103,12 +163,12 @@ export default function Game(){
       <div className={`interact-prompt ${canInteract?'available':''}`}><button className={canInteract?'primary':'secondary'} disabled={!canInteract} onClick={interact}><kbd>E</kbd><span>{canInteract?`${STATIONS.find(st=>st.id===nearest.task?.station)!.name}`:'Geh zu einem leuchtenden Kreis'}</span>{canInteract&&<ArrowRight size={18}/>}</button></div>
       <div className="touch-controls"><div className="joystick" role="group" aria-label="Bewegungsjoystick" onPointerDown={e=>{if(joystick.current.id!==-1)return;joystick.current.id=e.pointerId;e.currentTarget.setPointerCapture(e.pointerId);joystickMove(e);}} onPointerMove={joystickMove} onPointerUp={joystickEnd} onPointerCancel={joystickEnd}><Move size={25}/><span style={{transform:`translate(${joystickKnob.x}px,${joystickKnob.y}px)`}}/></div><div className="touch-buttons"><button className="dash-button" disabled={s.player.dashCooldown>0} onPointerDown={e=>{e.preventDefault();pendingDash.current=true;}}>{s.player.dashCooldown>0?s.player.dashCooldown.toFixed(1):<Zap size={21}/>}<small>FLITZEN</small></button><button className="action-button" disabled={!canInteract} onClick={interact}><Icon id={canInteract?nearest.task!.station:'ladder'} size={26}/><small>ANPACKEN</small></button></div></div>
     </>}
-    <Dialog open={showDialog} disablePointerDismissal onOpenChange={(open,details)=>{if(!open){if(help){setHelp(false);}else if(details.reason==='escape-key'){details.cancel();}else if(s.phase==='paused'){resumeGame(s);refresh();}else if(s.phase==='minigame'){pause();}}}}>
+    <Dialog open={showDialog} disablePointerDismissal onOpenChange={(open,details)=>{if(!open){if(graphicsStatus.current!=='ready'){details.cancel();}else if(help){setHelp(false);}else if(details.reason==='escape-key'){details.cancel();}else if(s.phase==='paused'){resumeGame(s);refresh();}else if(s.phase==='minigame'){pause();}}}}>
       <DialogContent showCloseButton={false} className={`game-dialog ${finished?'result-dialog':''}`}>
         <DialogTitle className="sr-only">{help?'So rettest du den Feierabend':s.phase==='paused'?'Verschnaufpause':finished?'Dein Ergebnis':activeTask?STATIONS.find(st=>st.id===activeTask.station)!.name:'Grafikhinweis'}</DialogTitle><DialogDescription className="sr-only">Hamid – Nur mal kurz. Ein Haushaltsabenteuer.</DialogDescription>
-        {worldError?<div className="pause-screen"><h2>Die Grafik braucht kurz Hilfe.</h2><p>{worldError}</p><button className="primary" onClick={()=>location.reload()}>Neu laden</button></div>:help?<div className="help-screen"><button className="close-help icon-button" onClick={()=>setHelp(false)} aria-label="Anleitung schließen"><X/></button><p className="eyebrow">EIN GANZ NORMALER SONNTAG</p><h2>Rette den Feierabend.</h2><p>Hamid hat für alles eine Lösung. Leider auch für Dinge, die noch gar nicht kaputt waren.</p><div className="help-steps"><div><span>01</span><p><strong>Leuchtende Kreise suchen</strong>Steuere Hamid mit WASD, Pfeiltasten oder dem Touch-Joystick zu einer Aufgabe.</p></div><div><span>02</span><p><strong>Anpacken, bevor’s knallt</strong>Drücke E oder ANPACKEN. Löse das kleine Minispiel. Die Anleitung hält die Zeit an.</p></div><div><span>03</span><p><strong>Chaos unter 100 halten</strong>Erledigte Aufgaben beruhigen die Familie. Abgelaufene Aufgaben bringen Unruhe. Zum Schluss wartet der Familien-Mainframe.</p></div></div><div className="help-controls"><span><kbd>⇧</kbd> kurzer Sprint</span><span><kbd>P / ESC</kbd> Pause</span><span><kbd>1–4</kbd> Antworten</span></div><button className="primary" onClick={()=>setHelp(false)}>Alles klar, ich bin vom Fach. <Check size={19}/></button></div>:null}
+        {worldError?<div className="pause-screen graphics-recovery" role="status"><h2>{graphicsStatus.current==='recovering'?'Grafik wird wiederhergestellt.':'Die Grafik braucht kurz Hilfe.'}</h2><p>{worldError}</p><button className="primary" onClick={rebuildGraphics}>Grafik neu aufbauen</button><button className="text-button" onClick={mainMenu}>Zurück zum Hauptmenü</button></div>:help?<div className="help-screen"><button className="close-help icon-button" onClick={()=>setHelp(false)} aria-label="Anleitung schließen"><X/></button><p className="eyebrow">EIN GANZ NORMALER SONNTAG</p><h2>Rette den Feierabend.</h2><p>Hamid hat für alles eine Lösung. Leider auch für Dinge, die noch gar nicht kaputt waren.</p><div className="help-steps"><div><span>01</span><p><strong>Leuchtende Kreise suchen</strong>Steuere Hamid mit WASD, Pfeiltasten oder dem Touch-Joystick zu einer Aufgabe.</p></div><div><span>02</span><p><strong>Anpacken, bevor’s knallt</strong>Drücke E oder ANPACKEN. Löse das kleine Minispiel. Die Anleitung hält die Zeit an.</p></div><div><span>03</span><p><strong>Chaos unter 100 halten</strong>Erledigte Aufgaben beruhigen die Familie. Abgelaufene Aufgaben bringen Unruhe. Zum Schluss wartet der Familien-Mainframe.</p></div></div><div className="help-controls"><span><kbd>⇧</kbd> kurzer Sprint</span><span><kbd>P / ESC</kbd> Pause</span><span><kbd>1–4</kbd> Antworten</span></div><button className="primary" onClick={()=>setHelp(false)}>Alles klar, ich bin vom Fach. <Check size={19}/></button></div>:null}
         {!help&&!worldError&&s.phase==='paused'&&<div className="pause-screen"><span className="pause-icon"><Pause size={28}/></span><p className="eyebrow">DER HAUSHALT KANN WARTEN</p><h2>Erst mal einen Tee.</h2><p>Ausnahmsweise bleibt Hamid kurz sitzen.</p><button className="primary" onClick={()=>{resumeGame(s);refresh();}} autoFocus><Play size={18}/>Weiter geht’s</button><div className="pause-actions"><button className="secondary" onClick={()=>setHelp(true)}><HelpCircle size={18}/>Anleitung</button><button className="secondary" onClick={mainMenu}><House size={18}/>Hauptmenü</button></div></div>}
-        {!worldError&&activeTask&&<div style={{display:!help&&s.phase==='minigame'?'block':'none'}}><MiniGame key={`${activeTask.id}-${activeTask.station}-${s.finalJob}`} station={activeTask.station} taskId={activeTask.id} final={s.finalJob} difficulty={s.difficulty} paused={s.phase!=='minigame'||help} onReady={v=>{miniReady.current=v;}} onFinish={completeMini} onMistake={()=>{failAttempt(game.current);refresh();}} sound={kind=>audio.current?.effect(kind)}/>{s.phase==='minigame'&&<button className="text-button abandon-task" onClick={()=>{cancelTask(s);miniReady.current=false;refresh();}}>Später weitermachen</button>}</div>}
+        {activeTask&&<div style={{display:!worldError&&!help&&s.phase==='minigame'?'block':'none'}}><MiniGame key={`${activeTask.id}-${activeTask.station}-${s.finalJob}`} station={activeTask.station} taskId={activeTask.id} final={s.finalJob} difficulty={s.difficulty} paused={s.phase!=='minigame'||help||!!worldError} onReady={v=>{miniReady.current=v;}} onFinish={completeMini} onMistake={()=>{failAttempt(game.current);refresh();}} sound={kind=>audio.current?.effect(kind)}/>{s.phase==='minigame'&&<button className="text-button abandon-task" onClick={()=>{cancelTask(s);miniReady.current=false;refresh();}}>Später weitermachen</button>}</div>}
         {!help&&!worldError&&finished&&<div className="result-screen"><div className={`result-medal ${s.phase==='lost'?'lost':''}`}>{s.phase==='won'?<Trophy size={45}/>:<Cat size={45}/>}</div><p className="eyebrow">{s.phase==='won'?'MISSION FEIERABEND: GESCHAFFT':'DER FAMILIENRAT HAT ENTSCHIEDEN'}</p><h2>{s.phase==='won'?'War doch nur kurz.':'Papa. Erst mal hinsetzen.'}</h2><p>{s.phase==='won'?'Internet läuft. Licht brennt. Katzen behaupten, sie hätten Hunger.':s.time<=0?'Die Zeit ist um. Hamid hatte gerade erst richtig angefangen.':'Zu viel Chaos. Die Katzen übernehmen vorübergehend die Haushaltsleitung.'}</p><div className="result-score">{s.score.toLocaleString('de-DE')}<span>FEIERABEND-PUNKTE</span></div><div className="result-stats"><div><strong>{s.completed}</strong><span>ERLEDIGT</span></div><div><strong>{s.bestCombo}×</strong><span>BESTE SERIE</span></div><div><strong>{Math.ceil(s.chaos)}%</strong><span>RESTCHAOS</span></div></div><div className="result-rank">{rank(s)}</div><button className="primary" onClick={start} autoFocus><RotateCcw size={19}/>Noch mal kurz</button><button className="text-button" onClick={mainMenu}>Zurück ins Hauptmenü</button></div>}
       </DialogContent>
     </Dialog>

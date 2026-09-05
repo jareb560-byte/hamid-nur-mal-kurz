@@ -17,3 +17,6 @@
 @media(max-height:500px) and (orientation:landscape){.task-info>strong{font-size:10px}.task-card{min-height:44px}.difficulty-option{font-size:9px}.objective-goal{font-size:9px}}
 
 .food-target-label{left:66.5%;width:23%;font-size:9px;letter-spacing:.04em}
+
+/* Avoid GPU compositor blur passes on touch devices, especially embedded browsers. */
+@media(pointer:coarse){.task-card,.interact-prompt button,.joystick,.dash-button,[data-slot=dialog-overlay]{backdrop-filter:none!important;-webkit-backdrop-filter:none!important}[data-slot=dialog-overlay]{background:#06262fe8!important}}

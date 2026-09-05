@@ -63,6 +63,14 @@ npm run test:browser
 
 Die Modelltests prüfen deterministische Aufgabenplanung, alle Schwierigkeitsgrade, Fristen, Pause, Kollisionen, Sprint, Wertung und beide Endzustände. Die Playwright-Tests verwenden lokal installiertes Google Chrome und prüfen Desktop, Touch-Ansichten, echte Eingaben in Minispiele und das Finale. Die Entwicklungsansicht enthält ausschließlich bei `import.meta.env.DEV` Testzugänge; diese werden aus dem Produktionsbuild entfernt. Geräteemulation ersetzt keinen Leistungstest auf einem echten Smartphone.
 
+## Smartphone-Grafik und Wiederherstellung
+
+Touch-Geräte verwenden eine sparsamere 3D-Darstellung mit höchstens 30 Bildern pro Sekunde, begrenzter Pufferauflösung, einfacherer Beleuchtung und ohne dynamische Schatten oder Unschärfefilter. Die Spiellogik bleibt bei festen 60 Schritten pro Sekunde. Verdeckte Tabs und eine ausgefallene Grafikverbindung stoppen weitere Renderaufrufe.
+
+Bei einem WebGL-Verbindungsabbruch wird das Spiel einschließlich der gerade geöffneten Aufgabe pausiert. Nach einer nativen Wiederherstellung kann mit „Weiter geht’s“ fortgesetzt werden. Bleibt die Verbindung aus, wird nach vier Sekunden einmal automatisch ein neuer Grafikbereich aufgebaut; anschließend steht bei Bedarf „Grafik neu aufbauen“ zur Verfügung. Spielstand, Position und Minispiel-Fortschritt bleiben dabei im laufenden Tab erhalten. Ein kompletter Seitenneustart oder ein vom Betriebssystem beendeter Tab startet weiterhin einen neuen Durchlauf. Nach einem Fehler wird die sparsame Grafikwahl auf diesem Gerät gespeichert.
+
+Die Tests lösen den Verlust der echten WebGL-Verbindung mit `WEBGL_lose_context` gezielt aus und prüfen native Wiederherstellung, automatische und manuelle Neuerstellung, laufende Minispiele, gehaltene Eingaben, hohe Pixeldichte und freigegebene alte Kontexte. Die Behandlung folgt den [WebGL-Hinweisen zu Verbindungsabbrüchen](https://wikis.khronos.org/webgl/HandlingContextLost) und der [MDN-Empfehlung, Renderpuffer und GPU-Ressourcen zu begrenzen und freizugeben](https://developer.mozilla.org/en-US/docs/Web/API/WebGL_API/WebGL_best_practices).
+
 ## Technik und Gestaltung
 
 - `src/simulation.ts`: unabhängiger Spielzustand, 60-Hz-Simulation, Kollisionen und Aufgabenplanung.
